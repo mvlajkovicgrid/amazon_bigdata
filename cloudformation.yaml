@@ -1,0 +1,490 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: NAJBOLJI STACK
+Resources:
+  ReviewsStorage:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: mvlajkovic-reviews-cf
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt 
+              - LambdaAvgRatingsFunction
+              - Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: reviews/
+  KinesisReviewsStream:
+    Type: 'AWS::Kinesis::Stream'
+    Properties:
+      Name: mvlajkovic-review-stream-cf
+      ShardCount: 1
+  FirehoseReviews:
+    Type: 'AWS::KinesisFirehose::DeliveryStream'
+    Properties:
+      DeliveryStreamName: mvlajkovic-reviews-firehose-cf-best
+      S3DestinationConfiguration:
+        BucketARN: !GetAtt 
+          - ReviewsStorage
+          - Arn
+        Prefix: reviews/
+        RoleARN: 'arn:aws:iam::571632058847:role/dmaslarevic_firehose_delivery_role'
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 5
+  PopularCategories:
+    Type: 'AWS::KinesisFirehose::DeliveryStream'
+    Properties:
+      DeliveryStreamName: mvlajkovic-popular-categories-cf
+      S3DestinationConfiguration:
+        BucketARN: !GetAtt 
+          - ViewsStorage
+          - Arn
+        Prefix: popular_categories/
+        RoleARN: 'arn:aws:iam::571632058847:role/dmaslarevic_firehose_delivery_role'
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 5
+  DynamoDB:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: user_ip
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_ip
+          KeyType: HASH
+      TableName: mvlajkovic_db
+      TimeToLiveSpecification:
+        AttributeName: time_to_live
+        Enabled: true
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+  ReviewsCrawler:
+    Type: 'AWS::Glue::Crawler'
+    Properties:
+      DatabaseName: mvlajkovic_db
+      TablePrefix: ''
+      Description: crawler for review data table in s3 bucket
+      Name: mvcrawler
+      Role: 'arn:aws:iam::571632058847:role/amilosevic-capstone-glue'
+      Targets:
+        DynamoDBTargets:
+          - Path: mvlajkovic_db
+        S3Targets:
+          - Path: 's3://mvlajkovic-reviews-cf/reviews/'
+  GlueDatabase:
+    Type: 'AWS::Glue::Database'
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      DatabaseInput:
+        Description: Capstone database
+        Name: mvlajkovic_gluedb_cf
+  LambdaAvgRatingsFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: mvlajkovic-resources
+        S3Key: lambda_crawler.zip
+      Role: 'arn:aws:iam::571632058847:role/amilosevic-capstone-lambda'
+      Runtime: python3.8
+      Handler: lambda_crawler.lambda_handler
+      FunctionName: mvlajkovic-average-ratings
+      MemorySize: 128
+      Timeout: 900
+      Environment:
+        Variables:
+          GlueReviewCrawler: !Ref ReviewsCrawler
+          DynamoDbTable: !Ref DynamoDB
+          AthenaReviewQuery: !GetAtt 
+            - ReviewsAnalysis
+            - NamedQueryId
+          Database: !Ref GlueDatabase
+          Bucket: mvlajkovic-reviews-cf
+      Description: IN YOUR WHOLE LIFE YOU HAVENT SEEN BETTER RATING
+  ReviewsAnalysis:
+    Type: 'AWS::Athena::NamedQuery'
+    Properties:
+      Database: mvlajkovic_db
+      Name: mvlajkovic_athena
+      QueryString: >
+        SELECT item_id, AVG(review_stars) AS average_rating FROM reviews WHERE
+        review_title <> '' AND review_text <> '' GROUP BY item_id
+  RatingsPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt 
+        - LambdaAvgRatingsFunction
+        - Arn
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: 'arn:aws:s3:::mvlajkovic-reviews-cf'
+  ViewsStorage:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: mvlajkovic-views-cf
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt 
+              - LambdaRunEMR
+              - Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: views/
+  KinesisViewsStream:
+    Type: 'AWS::Kinesis::Stream'
+    Properties:
+      Name: mvlajkovic-view-stream-cf
+      ShardCount: 1
+  FirehoseViews:
+    Type: 'AWS::KinesisFirehose::DeliveryStream'
+    Properties:
+      DeliveryStreamName: mvlajkovic-views-firehose-cf-wo-inputstream
+      S3DestinationConfiguration:
+        BucketARN: !GetAtt 
+          - ViewsStorage
+          - Arn
+        Prefix: views/
+        RoleARN: 'arn:aws:iam::571632058847:role/dmaslarevic_firehose_delivery_role'
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 5
+  LambdaRunEMR:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: mvlajkovic-resources
+        S3Key: mvlajkovic_first_try.zip
+      Role: 'arn:aws:iam::571632058847:role/amilosevic-capstone-lambda'
+      Runtime: python3.8
+      Handler: lambda_function.lambda_handler
+      FunctionName: mvlajkovic-lambda-run-emr
+      MemorySize: 128
+      Timeout: 900
+      Description: IMA LI BOLJE ?
+  EMRPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt 
+        - LambdaRunEMR
+        - Arn
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: 'arn:aws:s3:::mvlajkovic-views-cf'
+  DynamoDBViews:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: user_ip
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_ip
+          KeyType: HASH
+      TableName: mvlajkovic_db_views
+      TimeToLiveSpecification:
+        AttributeName: time_to_live
+        Enabled: true
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+  ViewsCrawler:
+    Type: 'AWS::Glue::Crawler'
+    Properties:
+      DatabaseName: mvlajkovic_db
+      TablePrefix: ''
+      Description: BEST CRAWLER EVER
+      Name: mv_view_crawler
+      Role: 'arn:aws:iam::571632058847:role/amilosevic-capstone-glue'
+      Targets:
+        DynamoDBTargets:
+          - Path: mvlajkovic_db_views
+        S3Targets:
+          - Path: 's3://mvlajkovic-views-cf/views/'
+  GlueViewDatabase:
+    Type: 'AWS::Glue::Database'
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      DatabaseInput:
+        Description: Capstone database
+        Name: mvlajkovic_views_cf
+  LambdaViewsDistribution:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: mvlajkovic-resources
+        S3Key: run_glue_views.zip
+      Role: 'arn:aws:iam::571632058847:role/amilosevic-capstone-lambda'
+      Runtime: python3.8
+      Handler: run_glue.lambda_handler
+      FunctionName: mvlajkovic-views-distribution
+      MemorySize: 128
+      Timeout: 900
+      Environment:
+        Variables:
+          ViewsCrawler: !Ref ViewsCrawler
+          DynamoDbTable: !Ref DynamoDBViews
+          AthenaReviewQuery: !GetAtt 
+            - ViewsAnalysis
+            - NamedQueryId
+          Database: !Ref GlueViewDatabase
+          Bucket: mvlajkovic-views-cf
+      Description: WE HAVENT HAD BETTER VIEWS DISTRIBUTION YET
+  ViewsAnalysis:
+    Type: 'AWS::Athena::NamedQuery'
+    Properties:
+      Database: mvlajkovic_db_views
+      Name: mvlajkovic_views_distribution
+      QueryString: |
+        SELECT device_type, COUNT(*) FROM views GROUP BY device_type
+  DistributionViewsPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt 
+        - LambdaViewsDistribution
+        - Arn
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: 'arn:aws:s3:::mvlajkovic-views-cf'
+  LambdaFilterFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: mvlajkovic-resources
+        S3Key: ips_filter_firehose.zip
+      Role: 'arn:aws:iam::571632058847:role/amilosevic-capstone-lambda'
+      Runtime: python3.8
+      Handler: ips_filter_firehose.lambda_handler
+      FunctionName: mvlajkovic-ip-filter-cf
+      MemorySize: 128
+      Timeout: 25
+    Description: Filters ip
+  EventSourceMappingItems:
+    Type: 'AWS::Lambda::EventSourceMapping'
+    Properties:
+      EventSourceArn: !Join 
+        - ''
+        - - 'arn:aws:kinesis:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':stream/mvlajkovic-view-stream-cf'
+      FunctionName: !GetAtt 
+        - LambdaFilterFunction
+        - Arn
+      StartingPosition: LATEST
+  EventSourceMappingReviews:
+    Type: 'AWS::Lambda::EventSourceMapping'
+    Properties:
+      EventSourceArn: !Join 
+        - ''
+        - - 'arn:aws:kinesis:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':stream/mvlajkovic-review-stream-cf'
+      FunctionName: !GetAtt 
+        - LambdaFilterFunction
+        - Arn
+      StartingPosition: LATEST
+  ViewsAnalytics:
+    Type: 'AWS::KinesisAnalytics::Application'
+    Properties:
+      ApplicationCode: >-
+        CREATE OR REPLACE STREAM "mvlajkovic_popular_items"
+          ("item_id" VARCHAR(5), "items_count" DOUBLE);
+
+        CREATE OR REPLACE PUMP "ITEMS_PUMP" AS
+          INSERT INTO "mvlajkovic_popular_items"
+            SELECT STREAM *
+              FROM TABLE (TOP_K_ITEMS_TUMBLING(
+                CURSOR(SELECT STREAM * FROM "SOURCE_SQL_STREAM_001"),
+                'ItemId',         -- name of column in single quotes
+                10,                -- number of the most frequently occurring values
+                60                 -- tumbling window size in seconds
+            )
+        );
+      ApplicationDescription: finding most popular items by views
+      ApplicationName: mvlajkovic-popular-items-analytics
+      Inputs:
+        - NamePrefix: SOURCE_SQL_STREAM
+          InputParallelism:
+            Count: 1
+          KinesisFirehoseInput:
+            ResourceARN: !GetAtt 
+              - FirehoseViews
+              - Arn
+            RoleARN: 'arn:aws:iam::571632058847:role/dmaslarevic-analytics'
+          InputSchema:
+            RecordColumns:
+              - Name: DeviceId
+                SqlType: VARCHAR(50)
+                Mapping: $.device_id
+              - Name: DeviceType
+                SqlType: VARCHAR(50)
+                Mapping: $.device_type
+              - Name: ItemId
+                SqlType: VARCHAR(50)
+                Mapping: $.item_id
+              - Name: TS
+                SqlType: VARCHAR(50)
+                Mapping: $.ts
+              - Name: UserIP
+                SqlType: VARCHAR(50)
+                Mapping: $.user_ip
+            RecordFormat:
+              RecordFormatType: JSON
+              MappingParameters:
+                JSONMappingParameters:
+                  RecordRowPath: "$"
+  ViewsAnalyticsOutput:
+    Type: 'AWS::KinesisAnalytics::ApplicationOutput'
+    DependsOn: ViewsAnalytics
+    Properties:
+      ApplicationName: !Ref ViewsAnalytics
+      Output:
+        Name: mvlajkovic_popular_items
+        DestinationSchema:
+          RecordFormatType: JSON
+        LambdaOutput:
+          ResourceARN: !GetAtt 
+            - LambdaSNSTrigger
+            - Arn
+          RoleARN: 'arn:aws:iam::571632058847:role/dmaslarevic-analytics'
+  PopularItems:
+    Type: 'AWS::KinesisFirehose::DeliveryStream'
+    Properties:
+      DeliveryStreamName: mvlajkovic-popular-items-cf
+      S3DestinationConfiguration:
+        BucketARN: !GetAtt 
+          - ViewsStorage
+          - Arn
+        Prefix: popular_items/
+        RoleARN: 'arn:aws:iam::571632058847:role/dmaslarevic_firehose_delivery_role'
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 5
+  SNSTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      Subscription:
+        - Endpoint: hamacarnajbolji@gmail.com
+          Protocol: email
+  LambdaSNSTrigger:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: mvlajkovic-resources
+        S3Key: sns_firehose.zip
+      Role: 'arn:aws:iam::571632058847:role/amilosevic-capstone-lambda'
+      Runtime: python3.8
+      Handler: sns_firehose.lambda_handler
+      FunctionName: mvlajkovic-trigger-sns
+      MemorySize: 128
+      Timeout: 900
+      Environment:
+        Variables:
+          SnsArn: !Ref SNSTopic
+      Description: NAJBOLJI TOPIC
+  ViewsCategoriesAnalytics:
+    Type: 'AWS::KinesisAnalytics::Application'
+    Properties:
+      ApplicationCode: >-
+        CREATE OR REPLACE STREAM "CATEGORIES_STREAM" (category VARCHAR(50),
+        views DOUBLE);
+
+        CREATE OR REPLACE PUMP "CATEGORY_PUMP" AS
+          INSERT INTO "CATEGORIES_STREAM"
+            SELECT STREAM *
+              FROM TABLE (TOP_K_ITEMS_TUMBLING(
+                CURSOR(
+                  SELECT STREAM * FROM "SOURCE_SQL_STREAM_001" AS source
+                  JOIN "categories" as reference
+                  ON source."ItemId" = reference."item_id"
+                ),
+                'category',
+                10,
+                60
+            )
+        );
+      ApplicationDescription: finding most popular categories by views
+      ApplicationName: mvlajkovic-popular-categories-analytics
+      Inputs:
+        - NamePrefix: SOURCE_SQL_STREAM
+          InputParallelism:
+            Count: 1
+          KinesisFirehoseInput:
+            ResourceARN: !GetAtt 
+              - FirehoseViews
+              - Arn
+            RoleARN: 'arn:aws:iam::571632058847:role/dmaslarevic-analytics'
+          InputSchema:
+            RecordColumns:
+              - Name: DeviceId
+                SqlType: VARCHAR(50)
+                Mapping: $.device_id
+              - Name: DeviceType
+                SqlType: VARCHAR(50)
+                Mapping: $.device_type
+              - Name: ItemId
+                SqlType: VARCHAR(50)
+                Mapping: $.item_id
+              - Name: TS
+                SqlType: VARCHAR(50)
+                Mapping: $.ts
+              - Name: UserIP
+                SqlType: VARCHAR(50)
+                Mapping: $.user_ip
+            RecordFormat:
+              RecordFormatType: JSON
+              MappingParameters:
+                JSONMappingParameters:
+                  RecordRowPath: $
+  CategoriesOutput:
+    Type: 'AWS::KinesisAnalytics::ApplicationOutput'
+    DependsOn: ViewsCategoriesAnalytics
+    Properties:
+      ApplicationName: !Ref ViewsCategoriesAnalytics
+      Output:
+        Name: CATEGORIES_STREAM
+        DestinationSchema:
+          RecordFormatType: JSON
+        KinesisFirehoseOutput:
+          ResourceARN: !GetAtt 
+            - PopularCategories
+            - Arn
+          RoleARN: 'arn:aws:iam::571632058847:role/dmaslarevic-analytics'
+  ReferenceData:
+    Type: 'AWS::KinesisAnalytics::ApplicationReferenceDataSource'
+    Properties:
+      ApplicationName: !Ref ViewsCategoriesAnalytics
+      ReferenceDataSource:
+        TableName: categories
+        ReferenceSchema:
+          RecordColumns:
+            - Name: item_id
+              SqlType: VARCHAR(50)
+            - Name: title
+              SqlType: VARCHAR(16)
+            - Name: description
+              SqlType: VARCHAR(16)
+            - Name: category
+              SqlType: VARCHAR(16)
+          RecordFormat:
+            RecordFormatType: CSV
+            MappingParameters:
+              CSVMappingParameters:
+                RecordColumnDelimiter: ','
+                RecordRowDelimiter: \n
+        S3ReferenceDataSource:
+          BucketARN: 'arn:aws:s3:::mvlajkovic-resources'
+          FileKey: items.csv
+          ReferenceRoleARN: 'arn:aws:iam::571632058847:role/dmaslarevic-analytics'
